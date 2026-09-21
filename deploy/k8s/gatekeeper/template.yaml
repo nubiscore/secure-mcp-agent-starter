@@ -1,0 +1,43 @@
+# OPA Gatekeeper ConstraintTemplate: every container in the constrained
+# namespaces must run non-root, with a read-only root filesystem, no privilege
+# escalation, and all capabilities dropped. Pod Security Admission covers most
+# of this; Gatekeeper gives you audit results and a place to add the rules PSA
+# does not have (for example: the agent-runtime label must be present so the
+# NetworkPolicy selects it).
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sagenthardening
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sAgentHardening
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sagenthardening
+
+        violation[{"msg": msg}] {
+          c := input.review.object.spec.containers[_]
+          not c.securityContext.readOnlyRootFilesystem == true
+          msg := sprintf("container %v must set readOnlyRootFilesystem: true", [c.name])
+        }
+        violation[{"msg": msg}] {
+          c := input.review.object.spec.containers[_]
+          not c.securityContext.allowPrivilegeEscalation == false
+          msg := sprintf("container %v must set allowPrivilegeEscalation: false", [c.name])
+        }
+        violation[{"msg": msg}] {
+          c := input.review.object.spec.containers[_]
+          not c.securityContext.capabilities.drop
+          msg := sprintf("container %v must drop all capabilities", [c.name])
+        }
+        violation[{"msg": msg}] {
+          not input.review.object.spec.securityContext.runAsNonRoot == true
+          msg := "pod must set runAsNonRoot: true"
+        }
+        violation[{"msg": msg}] {
+          not input.review.object.metadata.labels["app.kubernetes.io/component"]
+          msg := "pod must carry app.kubernetes.io/component so NetworkPolicy can select it"
+        }

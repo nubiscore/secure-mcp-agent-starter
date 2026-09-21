@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-gateway
+  namespace: ai-agents
+  labels:
+    app.kubernetes.io/name: mcp-gateway
+    app.kubernetes.io/component: mcp-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mcp-gateway
+        app.kubernetes.io/component: mcp-server
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp-gateway
+          image: ghcr.io/nubiscore/secure-mcp-agent-starter:latest
+          ports:
+            - containerPort: 3001
+              name: http
+          env:
+            - name: PORT
+              value: "3001"
+            - name: MCP_CANONICAL_URI
+              value: https://mcp.internal.example.com
+            - name: OAUTH_ISSUER
+              value: https://auth.example.com
+            - name: OAUTH_JWKS_URL
+              value: https://auth.example.com/.well-known/jwks.json
+            - name: TOOL_MANIFEST
+              value: /config/manifest.yaml
+            - name: KILL_SWITCH_FILE
+              value: /config/kill-switch.json
+            # Pin the hash printed by `pnpm build && node -e ...` (see CI). A drifted manifest fails the start.
+            - name: MANIFEST_HASH_PIN
+              valueFrom:
+                configMapKeyRef:
+                  name: mcp-gateway-config
+                  key: manifest_hash_pin
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+      volumes:
+        - name: config
+          configMap:
+            name: mcp-gateway-config

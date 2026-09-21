@@ -1,0 +1,66 @@
+# Purpose-bound tool manifest.
+#
+# Every tool declares what it is for, which OAuth scope it requires, whether it
+# mutates state, whether that mutation is reversible, and what containment
+# rules apply. The gateway (src/tools/registry.ts) ENFORCES these declarations
+# on every call. The hash of this file is logged at startup and on every audit
+# event so a changed manifest is detectable (see MANIFEST_HASH_PIN).
+
+resource: http://localhost:3001
+
+agents:
+  # Purpose binding: an agent may only call the tools declared here, regardless
+  # of which scopes its token happens to carry.
+  agent-support-triage:
+    tools: [get_ticket, search_kb, post_ticket_comment, issue_refund]
+  agent-kb-indexer:
+    tools: [search_kb]
+
+tools:
+  - name: get_ticket
+    purpose: Read a support ticket the requesting user already has access to
+    required_scope: tickets:read
+    mutating: false
+    # Row-level authorization is evaluated against the DELEGATING USER,
+    # not the agent's workload identity.
+    authorization: delegated
+    touches_pii: true
+    parameters:
+      ticket_id: { type: string, pattern: "^TKT-[0-9]{6}$", description: Ticket identifier }
+
+  - name: search_kb
+    purpose: Search the public knowledge base for policy and how-to articles
+    required_scope: kb:search
+    mutating: false
+    authorization: delegated
+    # Results are third-party content and are wrapped in an untrusted envelope.
+    untrusted_output: true
+    rate_limit: 60/hour
+    parameters:
+      query: { type: string, max_length: 200 }
+
+  - name: post_ticket_comment
+    purpose: Add a visible comment to a ticket on the user's behalf
+    required_scope: tickets:comment
+    mutating: true
+    reversible: true
+    authorization: delegated
+    rate_limit: 10/hour
+    parameters:
+      ticket_id: { type: string, pattern: "^TKT-[0-9]{6}$" }
+      body: { type: string, max_length: 2000, redact: true }
+
+  - name: issue_refund
+    purpose: Issue a refund against a completed order
+    required_scope: billing:refund
+    mutating: true
+    reversible: false
+    authorization: delegated
+    # Irreversible + financial: never autonomous.
+    confirmation: human_in_the_loop
+    max_value_cents: 50000
+    rate_limit: 5/hour
+    parameters:
+      order_id: { type: string, pattern: "^ORD-[0-9]{5}$" }
+      amount_cents: { type: integer, min: 1, max: 50000 }
+      reason: { type: string, max_length: 500 }

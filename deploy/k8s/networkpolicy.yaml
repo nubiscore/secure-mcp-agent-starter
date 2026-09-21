@@ -1,0 +1,71 @@
+# Default-deny egress for agent runtimes, with explicit holes for DNS and the
+# MCP gateway. Everything else outbound fails closed. Exfiltration needs a
+# route out; this removes it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-default-deny-egress
+  namespace: ai-agents
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: agent-runtime
+  policyTypes:
+    - Egress
+  egress:
+    # DNS only to the cluster resolver
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # The MCP gateway, nothing else. Add your model endpoint's egress proxy here.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mcp-gateway
+      ports:
+        - protocol: TCP
+          port: 3001
+---
+# The gateway itself may only talk to DNS and the authorization server's JWKS
+# endpoint (via your egress proxy). Note that link-local (169.254.0.0/16) is
+# excluded so the instance metadata endpoint is unreachable from any pod here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-gateway-egress
+  namespace: ai-agents
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-gateway
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
