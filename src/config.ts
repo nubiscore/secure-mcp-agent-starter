@@ -5,6 +5,8 @@
  */
 export type Config = {
   port: number
+  /** Interface to bind. 0.0.0.0 in containers; 127.0.0.1 when fronted by an SSH tunnel or local proxy. */
+  host: string
   canonicalUri: string
   issuer: string
   jwksUrl: string
@@ -37,6 +39,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const canonicalUri = str("MCP_CANONICAL_URI", "http://localhost:3001").replace(/\/$/, "")
   return {
     port: int("PORT", 3001),
+    host: str("HOST", "0.0.0.0"),
     canonicalUri,
     issuer,
     jwksUrl: str("OAUTH_JWKS_URL", `${issuer}/.well-known/jwks.json`),

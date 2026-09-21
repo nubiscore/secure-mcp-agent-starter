@@ -14,6 +14,7 @@ import express from "express"
 import { exportJWK, generateKeyPair, SignJWT } from "jose"
 
 const PORT = Number.parseInt(process.env.ISSUER_PORT ?? "3000", 10)
+const HOST = process.env.HOST ?? "0.0.0.0"
 const ISSUER = (process.env.OAUTH_ISSUER ?? `http://localhost:${PORT}`).replace(/\/$/, "")
 
 const { publicKey, privateKey } = await generateKeyPair("RS256")
@@ -78,6 +79,6 @@ app.post("/dev/token", async (req, res) => {
   res.json({ access_token: token, token_type: "Bearer", expires_in: ttl, scope: body.scope ?? "" })
 })
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.error(`[dev-issuer] DEVELOPMENT ONLY. Listening on ${ISSUER}  kid=${kid}`)
 })

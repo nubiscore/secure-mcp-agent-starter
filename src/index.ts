@@ -41,11 +41,12 @@ const app = createApp({
   verifier: createTokenVerifier({ issuer: config.issuer, canonicalUri: config.canonicalUri, jwks: config.jwksUrl }),
 })
 
-app.listen(config.port, () => {
+app.listen(config.port, config.host, () => {
   console.error(
     JSON.stringify({
       event: "server.started",
       port: config.port,
+      host: config.host,
       canonical_uri: config.canonicalUri,
       issuer: config.issuer,
       manifest_hash: manifestHash,

@@ -43,7 +43,7 @@ pnpm dev:server   # terminal 2: the MCP server on :3001
 pnpm dev:client   # terminal 3: the walkthrough
 ```
 
-The client walks through twelve steps and prints what happened at each one. The server terminal prints one JSON audit event per tool call. `pnpm test` runs the same flow as an integration test, plus unit tests for each control.
+The client walks through the controls step by step and prints what happened at each one. The server terminal prints one JSON audit event per tool call. `pnpm test` runs the same flow as an integration test, plus unit tests for each control.
 
 ### What the walkthrough shows
 
@@ -59,6 +59,8 @@ The client walks through twelve steps and prints what happened at each one. The 
 10. A retry with different parameters is contained again. Approvals do not carry over. Then, because the session read PII earlier, an outbound notification is contained, and opening a fresh session does not reset that. Another user's token cannot terminate the session.
 11. A token minted for a different resource server is rejected with an audience error.
 12. A valid token for an agent that is not declared in the manifest is rejected.
+
+Want to try to break it yourself? [TESTING.md](TESTING.md) is a hands-on checklist with the expected result for each attempt.
 
 ## How a call flows
 
