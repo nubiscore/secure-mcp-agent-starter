@@ -7,7 +7,7 @@ import type { ToolDefinition } from "../tools/manifest.js"
  * baseline, manifest hash mismatches, first-time tool use, and approval gates
  * hit at unusual frequency.
  */
-export type AuditEvent = {
+export type ToolInvokedEvent = {
   event: "agent.tool.invoked"
   timestamp: string
   trace_id: string
@@ -38,6 +38,27 @@ export type AuditEvent = {
   }
   outcome: { status: "success" | "contained" | "error"; latency_ms: number }
 }
+
+export type ApprovalGrantedEvent = {
+  event: "agent.approval.granted"
+  timestamp: string
+  session_id: string
+  agent: { id: string; version: string }
+  tool: string
+  approval_key: string
+  operator: { subject: string; client_id: string }
+}
+
+export type SessionEvent = {
+  event: "agent.session.opened" | "agent.session.closed" | "agent.session.expired" | "agent.session.refused"
+  timestamp: string
+  session_id: string | null
+  agent: { id: string; version: string }
+  on_behalf_of: string
+  reason: string | null
+}
+
+export type AuditEvent = ToolInvokedEvent | ApprovalGrantedEvent | SessionEvent
 
 export type AuditSink = (event: AuditEvent) => void
 

@@ -21,6 +21,15 @@ describe("token verifier", async () => {
     await expect(verifier.verifyAccessToken(token)).rejects.toBeInstanceOf(InvalidTokenError)
   })
 
+  it("rejects a token valid for several resource servers, even if this one is among them", async () => {
+    const token = await issuer.mint({ sub: "user_1", client_id: "agent-a", scope: "tickets:read", aud: [TEST_RESOURCE, "https://finance.test"] })
+    await expect(verifier.verifyAccessToken(token)).rejects.toBeInstanceOf(InvalidTokenError)
+  })
+
+  it("refuses to derive an identity from auth info without a subject", async () => {
+    expect(() => identityFromAuthInfo({ token: "x", clientId: "agent-a", scopes: [] })).toThrow(/no subject/)
+  })
+
   it("rejects a token from a different issuer", async () => {
     const token = await issuer.mint({ sub: "user_1", client_id: "agent-a", scope: "tickets:read", iss: "https://evil.test" })
     await expect(verifier.verifyAccessToken(token)).rejects.toBeInstanceOf(InvalidTokenError)

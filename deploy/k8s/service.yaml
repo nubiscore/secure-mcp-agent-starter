@@ -8,5 +8,5 @@ spec:
     app.kubernetes.io/name: mcp-gateway
   ports:
     - name: http
-      port: 8443
+      port: 3001
       targetPort: http

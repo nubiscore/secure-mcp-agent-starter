@@ -16,14 +16,16 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/index.js",
     "test": "vitest run",
-    "lint": "eslint . && tsc -p tsconfig.json --noEmit",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "lint": "eslint . && tsc -p tsconfig.json --noEmit && pnpm check:manifest-copy",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "manifest:hash": "tsx -e \"import('./src/tools/manifest.ts').then(m => console.log(m.hashManifest(m.loadManifest(process.env.TOOL_MANIFEST ?? 'tools/manifest.yaml'))))\"",
+    "check:manifest-copy": "cmp -s tools/manifest.yaml deploy/k8s/manifest.yaml || (echo 'deploy/k8s/manifest.yaml differs from tools/manifest.yaml; run: cp tools/manifest.yaml deploy/k8s/manifest.yaml' && exit 1)"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "express": "5.2.1",
     "jose": "6.2.12",
-    "yaml": "2.8.1",
+    "yaml": "2.8.3",
     "zod": "4.6.5"
   },
   "devDependencies": {

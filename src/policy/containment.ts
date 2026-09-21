@@ -1,12 +1,15 @@
 import type { ToolDefinition } from "../tools/manifest.js"
 import type { FlagStore } from "./kill-switch.js"
-import type { SessionState } from "./session.js"
+import { SessionState } from "./session.js"
 
 export type SessionBudget = {
+  /** Client-reported loop iterations (advisory; see registry.ts). */
   maxIterations: number
+  /** Gateway-counted tool calls (enforced). */
   maxToolCalls: number
+  /** Client-reported token spend (advisory; see registry.ts). */
   maxTokens: number
-  /** Irreversible actions per session. */
+  /** Irreversible actions per (subject, agent) window. */
   maxMutations: number
 }
 
@@ -16,6 +19,7 @@ export type ContainmentReason =
   | "tool_call_cap"
   | "token_budget"
   | "outside_purpose"
+  | "value_ceiling"
   | "egress_after_pii"
   | "mutation_cap"
   | "human_approval_required"
@@ -52,11 +56,11 @@ export function check(
   }
 
   // 2. Budgets. When a cap is hit, fail into a human handoff, never degrade silently.
-  if (session.iterations >= budget.maxIterations) {
-    throw new Contained("iteration_cap", "iteration cap reached", { cap: budget.maxIterations })
-  }
   if (session.toolCalls >= budget.maxToolCalls) {
     throw new Contained("tool_call_cap", "tool call cap reached", { cap: budget.maxToolCalls })
+  }
+  if (session.iterations >= budget.maxIterations) {
+    throw new Contained("iteration_cap", "iteration cap reached", { cap: budget.maxIterations })
   }
   if (session.tokensUsed >= budget.maxTokens) {
     throw new Contained("token_budget", "token budget exhausted", { cap: budget.maxTokens })
@@ -68,12 +72,19 @@ export function check(
     throw new Contained("outside_purpose", `tool ${tool.name} outside declared purpose for ${session.agentId}`)
   }
 
-  // 4. Break parasitic chains: no external egress after reading PII in this session.
-  if (tool.external_egress && session.touchedPii) {
-    throw new Contained("egress_after_pii", "egress blocked after PII access in session")
+  // 4. Value ceiling on financial tools, before the approval gate so an
+  //    over-ceiling call is refused outright rather than offered for approval.
+  if (tool.max_value_cents !== undefined && typeof args.amount_cents === "number" && args.amount_cents > tool.max_value_cents) {
+    throw new Contained("value_ceiling", `amount exceeds max_value_cents for ${tool.name}`, { max_value_cents: tool.max_value_cents })
   }
 
-  // 5. Irreversible actions are gated, always, on the concrete parameters.
+  // 5. Break parasitic chains: no external egress after reading PII, in this
+  //    session or any recent session for the same (subject, agent).
+  if (tool.external_egress && session.touchedPii) {
+    throw new Contained("egress_after_pii", "egress blocked after PII access")
+  }
+
+  // 6. Irreversible actions are gated, always, on the concrete parameters.
   if (tool.mutating && tool.reversible === false) {
     if (session.mutations >= budget.maxMutations) {
       throw new Contained("mutation_cap", "mutation cap reached", { cap: budget.maxMutations })
@@ -82,18 +93,8 @@ export function check(
       throw new Contained("human_approval_required", "human approval required", {
         tool: tool.name,
         arguments: args,
-        approval_key: approvalKeyFor(session, tool.name, args),
+        approval_key: `${session.sessionId}/${SessionState.approvalKey(tool.name, args)}`,
       })
     }
   }
-
-  // 6. Value ceiling on financial tools, enforced here even though the schema also bounds it.
-  if (tool.max_value_cents !== undefined && typeof args.amount_cents === "number" && args.amount_cents > tool.max_value_cents) {
-    throw new Contained("outside_purpose", `amount exceeds max_value_cents for ${tool.name}`, { max_value_cents: tool.max_value_cents })
-  }
-}
-
-function approvalKeyFor(session: SessionState, toolName: string, args: Record<string, unknown>): string {
-  // Exposed so an operator can approve exactly this call and nothing else.
-  return `${session.sessionId}/${(session.constructor as typeof SessionState).approvalKey(toolName, args)}`
 }

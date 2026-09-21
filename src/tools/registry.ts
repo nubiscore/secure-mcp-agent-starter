@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
-import { identityFromAuthInfo } from "../auth/verify-token.js"
-import { redactArguments, type AuditEvent, type AuditSink } from "../audit/events.js"
+import { identityFromAuthInfo, type VerifiedIdentity } from "../auth/verify-token.js"
+import { redactArguments, type AuditSink, type ToolInvokedEvent } from "../audit/events.js"
 import { check, Contained, type SessionBudget } from "../policy/containment.js"
 import type { FlagStore } from "../policy/kill-switch.js"
 import type { RateLimiter } from "../policy/rate-limit.js"
-import type { SessionState, SessionStore } from "../policy/session.js"
+import { SessionState, type SessionStore } from "../policy/session.js"
+import { renderEnvelope, stripStructured, wrapUntrusted } from "../untrusted/envelope.js"
 import type { ToolHandler } from "./handlers.js"
 import { parametersToZodShape, type Manifest, type ToolDefinition } from "./manifest.js"
 
@@ -23,16 +24,23 @@ export type GatewayDeps = {
   canonicalUri: string
 }
 
+/** Session binding: the caller must be the exact identity that opened the session. */
+export function sessionMatchesIdentity(session: SessionState, identity: VerifiedIdentity): boolean {
+  return session.subject === identity.subject && session.agentId === identity.clientId && session.actor === identity.actor
+}
+
 /**
- * The gateway. Every tool the model can see is registered through here, and
- * every call passes through the same sequence:
+ * The gateway. Only the tools in the agent's declared purpose are registered
+ * for its session, and every call passes through the same sequence:
  *
- *   scope check -> session binding -> containment -> rate limit -> handler -> audit
+ *   session binding -> scope check -> containment -> rate limit -> handler
+ *   -> untrusted-output envelope -> audit
  *
  * Nothing in this sequence depends on the model's cooperation.
  */
-export function registerManifestTools(server: McpServer, deps: GatewayDeps): void {
+export function registerManifestTools(server: McpServer, allowedTools: ReadonlySet<string>, deps: GatewayDeps): void {
   for (const tool of deps.manifest.tools) {
+    if (!allowedTools.has(tool.name)) continue
     const handler = deps.handlers[tool.name]
     if (!handler) throw new Error(`manifest declares ${tool.name} but no handler is registered`)
 
@@ -57,12 +65,18 @@ export function registerManifestTools(server: McpServer, deps: GatewayDeps): voi
         const identity = identityFromAuthInfo(authInfo)
         const session = deps.sessions.get(sessionId)
         if (!session) return errorResult("no_session", "session not initialised")
+        session.lastActivity = started
 
-        const meta = (extra._meta ?? {}) as { triggering_content_source?: unknown }
+        // Advisory hints from the client about its own loop. They can only make
+        // containment stricter (the counters never go down), so a lying client
+        // gains nothing; an honest one gets earlier handoff.
+        const meta = (extra._meta ?? {}) as { triggering_content_source?: unknown; iteration?: unknown; tokens_used?: unknown }
         const triggering = typeof meta.triggering_content_source === "string" ? meta.triggering_content_source : null
+        if (typeof meta.iteration === "number" && meta.iteration > session.iterations) session.iterations = Math.floor(meta.iteration)
+        if (typeof meta.tokens_used === "number" && meta.tokens_used > 0) session.tokensUsed += Math.floor(meta.tokens_used)
         const firstUse = !session.toolsUsed.has(tool.name)
 
-        const base = (): Omit<AuditEvent, "decision" | "outcome"> => ({
+        const base = (): Omit<ToolInvokedEvent, "decision" | "outcome"> => ({
           event: "agent.tool.invoked",
           timestamp: new Date().toISOString(),
           trace_id: traceId,
@@ -84,74 +98,83 @@ export function registerManifestTools(server: McpServer, deps: GatewayDeps): voi
             first_use_in_session: firstUse,
           },
         })
-
-        // 0. Session binding: a session opened for one user cannot be driven
-        //    with another user's token. Logged, because it is an attack signal.
-        if (session.subject !== identity.subject) {
+        const contained = (reason: string, policy: ToolInvokedEvent["decision"]["policy"] = "contained") =>
           deps.audit({
             ...base(),
-            decision: { iteration: session.iterations, triggering_content_source: triggering, policy: "contained", reason: "session_identity_mismatch", human_approval: null },
+            decision: { iteration: session.iterations, triggering_content_source: triggering, policy, reason, human_approval: null },
             outcome: { status: "contained", latency_ms: Date.now() - started },
           })
-          return errorResult("session_identity_mismatch", "token subject does not match session")
+
+        // 0. Session binding: the session was opened by one (subject, agent,
+        //    workload). Any other identity presenting the session id is an
+        //    attack signal, logged as such.
+        if (!sessionMatchesIdentity(session, identity)) {
+          contained("session_identity_mismatch")
+          return errorResult("session_identity_mismatch", "token identity does not match session")
         }
 
         // 1. Scope: the token must carry the tool's required scope.
         if (!identity.scopes.includes(tool.required_scope)) {
-          deps.audit({
-            ...base(),
-            decision: { iteration: session.iterations, triggering_content_source: triggering, policy: "contained", reason: "insufficient_scope", human_approval: null },
-            outcome: { status: "contained", latency_ms: Date.now() - started },
-          })
+          contained("insufficient_scope")
           return errorResult("insufficient_scope", `tool requires scope ${tool.required_scope}`)
         }
 
-        // 2. Containment, before the call, every call.
+        // 2. Containment, before the call, every call. Any unexpected failure
+        //    inside the check fails closed and is reported generically.
         try {
           check(session, tool, args, deps.budget, deps.flags)
         } catch (err) {
           if (err instanceof Contained) {
-            deps.audit({
-              ...base(),
-              decision: { iteration: session.iterations, triggering_content_source: triggering, policy: "contained", reason: err.reason, human_approval: null },
-              outcome: { status: "contained", latency_ms: Date.now() - started },
-            })
+            contained(err.reason)
             return containedResult(err)
           }
-          throw err
+          contained(err instanceof Error ? err.name : "unknown", "error")
+          return errorResult("policy_error", "policy evaluation failed")
         }
 
         // 3. Rate limit per tool per delegating user.
         if (tool.rate_limit && !deps.rateLimiter.take(`${tool.name}:${identity.subject}`, tool.rate_limit)) {
-          deps.audit({
-            ...base(),
-            decision: { iteration: session.iterations, triggering_content_source: triggering, policy: "rate_limited", reason: tool.rate_limit, human_approval: null },
-            outcome: { status: "contained", latency_ms: Date.now() - started },
-          })
+          contained(tool.rate_limit, "rate_limited")
           return containedResult(new Contained("rate_limited", `rate limit ${tool.rate_limit} exceeded for ${tool.name}`))
         }
 
-        // 4. Account for the call, then run the handler.
+        // 4. Account for the call BEFORE running it, so a handler failure still
+        //    consumed the approval and counted the mutation (fail closed).
         session.toolCalls += 1
-        session.iterations += 1
         session.toolsUsed.add(tool.name)
-        if (tool.touches_pii) session.touchedPii = true
+        if (tool.touches_pii) deps.sessions.recordPiiAccess(session)
         let approvalKey: string | null = null
         if (tool.mutating && tool.reversible === false) {
-          approvalKey = SessionStateApprovalKey(session, tool, args)
+          approvalKey = `${session.sessionId}/${SessionState.approvalKey(tool.name, args)}`
           session.consumeApproval(tool.name, args)
-          session.mutations += 1
+          deps.sessions.recordMutation(session)
         }
 
         try {
           const result = await handler(args, { identity, sessionId })
+          let text = result.text
+          let structured = result.structured
+
+          // 5. Untrusted output is wrapped HERE, centrally, so no handler can
+          //    forget. Structured fields are stripped too; the model sees them.
+          if (tool.untrusted_output) {
+            const env = wrapUntrusted(result.untrustedSource ?? `${tool.name}#result`, result.text)
+            text = renderEnvelope(env)
+            structured = {
+              ...(stripStructured(structured ?? {}) as Record<string, unknown>),
+              source: env.source,
+              suspicious: env.suspicious,
+              removed: env.removed,
+            }
+          }
+
           deps.audit({
             ...base(),
             decision: { iteration: session.iterations, triggering_content_source: triggering, policy: "allow", reason: null, human_approval: approvalKey },
             outcome: { status: "success", latency_ms: Date.now() - started },
           })
-          const out: CallToolResult = { content: [{ type: "text", text: result.text }] }
-          if (result.structured) out.structuredContent = result.structured
+          const out: CallToolResult = { content: [{ type: "text", text }] }
+          if (structured) out.structuredContent = structured
           return out
         } catch (err) {
           deps.audit({
@@ -165,10 +188,6 @@ export function registerManifestTools(server: McpServer, deps: GatewayDeps): voi
       },
     )
   }
-}
-
-function SessionStateApprovalKey(session: SessionState, tool: ToolDefinition, args: Record<string, unknown>): string {
-  return `${session.sessionId}/${(session.constructor as typeof SessionState).approvalKey(tool.name, args)}`
 }
 
 function errorResult(code: string, message: string): CallToolResult {
@@ -194,3 +213,9 @@ export const ApprovalRequestSchema = z.object({
   tool: z.string().min(1),
   arguments: z.record(z.string(), z.unknown()),
 })
+
+/** Validate approval arguments against the tool's own schema, so an operator cannot approve nonsense. */
+export function validateApprovalArguments(tool: ToolDefinition, args: Record<string, unknown>): Record<string, unknown> | null {
+  const parsed = z.object(parametersToZodShape(tool.parameters)).strict().safeParse(args)
+  return parsed.success ? (parsed.data as Record<string, unknown>) : null
+}

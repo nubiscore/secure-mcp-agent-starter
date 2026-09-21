@@ -6,15 +6,15 @@ resources:
   - deployment.yaml
   - service.yaml
   - networkpolicy.yaml
-  - gatekeeper/template.yaml
-  - gatekeeper/constraint.yaml
 configMapGenerator:
   - name: mcp-gateway-config
     files:
-      - manifest.yaml=../../tools/manifest.yaml
+      # An identical copy of tools/manifest.yaml. Kustomize refuses to read
+      # files outside its root; CI fails if the two files drift.
+      - manifest.yaml
       - kill-switch.json
     literals:
-      # Replace with the hash printed by CI for the manifest you approved.
+      # Replace with the hash printed by `pnpm manifest:hash` for the manifest you approved.
       - manifest_hash_pin=
 generatorOptions:
   disableNameSuffixHash: true

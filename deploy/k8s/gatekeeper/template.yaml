@@ -1,9 +1,11 @@
-# OPA Gatekeeper ConstraintTemplate: every container in the constrained
-# namespaces must run non-root, with a read-only root filesystem, no privilege
-# escalation, and all capabilities dropped. Pod Security Admission covers most
-# of this; Gatekeeper gives you audit results and a place to add the rules PSA
-# does not have (for example: the agent-runtime label must be present so the
-# NetworkPolicy selects it).
+# OPA Gatekeeper ConstraintTemplate for the ai-agents namespace.
+#
+# Pod Security Admission "restricted" already rejects privileged pods. This
+# template adds what PSA does not check:
+#   - every container drops ALL capabilities and has a read-only root filesystem
+#   - every pod carries app.kubernetes.io/component with a value the
+#     NetworkPolicies select on (mcp-server or agent-runtime), so a pod cannot
+#     dodge the default-deny egress policy by omitting or misspelling the label
 apiVersion: templates.gatekeeper.sh/v1
 kind: ConstraintTemplate
 metadata:
@@ -13,31 +15,53 @@ spec:
     spec:
       names:
         kind: K8sAgentHardening
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            allowedComponents:
+              type: array
+              items:
+                type: string
   targets:
     - target: admission.k8s.gatekeeper.sh
       rego: |
         package k8sagenthardening
 
-        violation[{"msg": msg}] {
+        containers[c] {
           c := input.review.object.spec.containers[_]
+        }
+        containers[c] {
+          c := input.review.object.spec.initContainers[_]
+        }
+
+        violation[{"msg": msg}] {
+          c := containers[_]
           not c.securityContext.readOnlyRootFilesystem == true
           msg := sprintf("container %v must set readOnlyRootFilesystem: true", [c.name])
         }
         violation[{"msg": msg}] {
-          c := input.review.object.spec.containers[_]
+          c := containers[_]
           not c.securityContext.allowPrivilegeEscalation == false
           msg := sprintf("container %v must set allowPrivilegeEscalation: false", [c.name])
         }
         violation[{"msg": msg}] {
-          c := input.review.object.spec.containers[_]
-          not c.securityContext.capabilities.drop
-          msg := sprintf("container %v must drop all capabilities", [c.name])
+          c := containers[_]
+          drops := {d | d := c.securityContext.capabilities.drop[_]}
+          not drops["ALL"]
+          msg := sprintf("container %v must drop ALL capabilities", [c.name])
         }
         violation[{"msg": msg}] {
           not input.review.object.spec.securityContext.runAsNonRoot == true
           msg := "pod must set runAsNonRoot: true"
         }
         violation[{"msg": msg}] {
+          component := input.review.object.metadata.labels["app.kubernetes.io/component"]
+          allowed := {a | a := input.parameters.allowedComponents[_]}
+          not allowed[component]
+          msg := sprintf("app.kubernetes.io/component must be one of %v so NetworkPolicy selects the pod, got %v", [input.parameters.allowedComponents, component])
+        }
+        violation[{"msg": msg}] {
           not input.review.object.metadata.labels["app.kubernetes.io/component"]
-          msg := "pod must carry app.kubernetes.io/component so NetworkPolicy can select it"
+          msg := "pod must carry app.kubernetes.io/component so NetworkPolicy selects it"
         }

@@ -87,13 +87,23 @@ function canonicalize(value: unknown): unknown {
 }
 
 /**
- * Stable hash of the tool definitions (name, description, parameter schema).
- * Record it at approval time, verify it on every start, log it on every event.
- * A changed hash is how you detect a rug pull.
+ * Stable hash of the WHOLE manifest: tool definitions (name, description,
+ * parameter schema) and the agent purpose bindings. Record it at approval
+ * time, verify it on every start, log it on every event. A changed hash is
+ * how you detect a rug pull, and a widened purpose is a rug pull too.
  */
 export function hashManifest(manifest: Manifest): string {
-  const digest = createHash("sha256").update(JSON.stringify(canonicalize(manifest.tools))).digest("hex")
+  const digest = createHash("sha256").update(JSON.stringify(canonicalize(manifest))).digest("hex")
   return `sha256:${digest}`
+}
+
+/** Startup guard: refuse to run a manifest other than the one that was approved. */
+export function assertManifestPinned(manifest: Manifest, pin: string | undefined): string {
+  const hash = hashManifest(manifest)
+  if (pin && pin !== hash) {
+    throw new Error(`manifest hash mismatch: pinned ${pin}, loaded ${hash}`)
+  }
+  return hash
 }
 
 export function parseRateLimit(spec: string): { limit: number; windowMs: number } {

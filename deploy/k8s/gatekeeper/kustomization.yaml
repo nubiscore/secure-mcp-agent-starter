@@ -1,0 +1,8 @@
+# Cluster-scoped Gatekeeper objects live in their own kustomization so the
+# namespace transformer of the base does not stamp a namespace onto them.
+#   kubectl apply -k deploy/k8s/gatekeeper && kubectl apply -k deploy/k8s
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - template.yaml
+  - constraint.yaml

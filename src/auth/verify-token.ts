@@ -44,8 +44,13 @@ function readActor(payload: JWTPayload): string | undefined {
 
 export function identityFromAuthInfo(auth: AuthInfo): VerifiedIdentity {
   const extra = (auth.extra ?? {}) as Partial<VerifiedIdentity>
+  if (typeof extra.subject !== "string" || !extra.subject) {
+    // A verifier that does not populate the subject must not silently bind
+    // every session to the same placeholder identity.
+    throw new Error("verified token carries no subject; the verifier must populate extra.subject")
+  }
   return {
-    subject: extra.subject ?? "unknown",
+    subject: extra.subject,
     actor: extra.actor,
     clientId: auth.clientId,
     scopes: auth.scopes,
@@ -77,6 +82,12 @@ export function createTokenVerifier(opts: VerifierOptions): OAuthTokenVerifier {
         throw new InvalidTokenError(message)
       }
 
+      // jose accepts a token whose `aud` array merely CONTAINS this server. A
+      // token valid for several resource servers is exactly the replay surface
+      // the audience restriction exists to close, so require a single audience.
+      if (payload.aud !== opts.canonicalUri) {
+        throw new InvalidTokenError("token must carry exactly one audience, this server")
+      }
       if (typeof payload.sub !== "string" || !payload.sub) {
         throw new InvalidTokenError("token has no subject")
       }

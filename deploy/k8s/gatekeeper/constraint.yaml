@@ -9,3 +9,5 @@ spec:
       - apiGroups: [""]
         kinds: ["Pod"]
     namespaces: ["ai-agents"]
+  parameters:
+    allowedComponents: ["mcp-server", "agent-runtime"]

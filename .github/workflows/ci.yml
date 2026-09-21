@@ -22,7 +22,12 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - name: Manifest hash
-        run: node -e "import('./dist/src/tools/manifest.js').then(m => console.log(m.hashManifest(m.loadManifest('tools/manifest.yaml'))))"
+        run: pnpm manifest:hash
+      - name: Kustomize renders
+        run: |
+          kubectl kustomize deploy/k8s > /tmp/base.yaml
+          kubectl kustomize deploy/k8s/gatekeeper > /tmp/gatekeeper.yaml
+          grep -q "kind: NetworkPolicy" /tmp/base.yaml && grep -q "kind: ConstraintTemplate" /tmp/gatekeeper.yaml
 
   container:
     runs-on: ubuntu-latest

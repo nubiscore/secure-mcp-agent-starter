@@ -3,5 +3,10 @@ dist
 .git
 .env
 test
-deploy
+dev
+examples
+deploy/*
+!deploy/k8s
+deploy/k8s/*
+!deploy/k8s/kill-switch.json
 *.md

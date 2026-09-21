@@ -57,9 +57,14 @@ async function main() {
   const sessionId = transport.sessionId
   show("session", sessionId)
 
-  step("2. Tools visible to this agent (purpose-bound manifest)")
+  step("2. Tools registered for this agent: only its declared purpose")
   const tools = await client.listTools()
   show("tools", tools.tools.map((t) => `${t.name}  [${t.annotations?.readOnlyHint ? "read-only" : t.annotations?.destructiveHint ? "DESTRUCTIVE" : "mutating"}]`))
+  const indexerToken = await mint({ sub: "user_88213", client_id: "agent-kb-indexer", scope: "tickets:read tickets:comment kb:search billing:refund", resource: MCP })
+  const indexer = await connect(indexerToken, "agent-kb-indexer")
+  show("agent-kb-indexer sees (same scopes, narrower purpose)", (await indexer.client.listTools()).tools.map((t) => t.name))
+  await indexer.transport.terminateSession()
+  await indexer.client.close()
 
   step("3. Read own ticket (row-level auth against the delegating user)")
   show("get_ticket TKT-004821", (await client.callTool({ name: "get_ticket", arguments: { ticket_id: "TKT-004821" } })).structuredContent)
@@ -90,7 +95,16 @@ async function main() {
   const blocked = await client.callTool({ name: "issue_refund", arguments: refundArgs })
   show("issue_refund", blocked.structuredContent)
 
-  step("8. On-call operator approves the CONCRETE parameters (separate identity, operator scope)")
+  step("8. The agent cannot approve itself, even with the operator scope on its own token")
+  const selfToken = await mint({ sub: "user_88213", client_id: "agent-support-triage", scope: "billing:refund agent:operate", resource: MCP, act: { sub: "spiffe://example.com/ns/ai-agents/sa/support-triage" } })
+  const selfApprove = await fetch(`${MCP}/admin/approvals`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Authorization: `Bearer ${selfToken}` },
+    body: JSON.stringify({ session_id: sessionId, tool: "issue_refund", arguments: refundArgs }),
+  })
+  show(`self-approval -> HTTP ${selfApprove.status}`, await selfApprove.json())
+
+  step("8b. On-call operator approves the CONCRETE parameters (separate identity, operator scope)")
   const operatorToken = await mint({ sub: "oncall_operator", client_id: "ops-console", scope: "agent:operate", resource: MCP })
   const approval = await fetch(`${MCP}/admin/approvals`, {
     method: "POST",
@@ -104,6 +118,21 @@ async function main() {
 
   step("10. Retry with DIFFERENT parameters: approval does not carry over")
   show("issue_refund (amount changed)", (await client.callTool({ name: "issue_refund", arguments: { ...refundArgs, amount_cents: 100 } })).structuredContent)
+
+  step("10b. Read-then-exfiltrate: PII was read in step 3, so outbound email is contained, even in a NEW session")
+  show("notify_customer (same session)", (await client.callTool({ name: "notify_customer", arguments: { ticket_id: "TKT-004821", body: "Your refund is on its way" } })).structuredContent)
+  const again = await connect(userToken)
+  show("notify_customer (fresh session)", (await again.client.callTool({ name: "notify_customer", arguments: { ticket_id: "TKT-004821", body: "Your refund is on its way" } })).structuredContent)
+  await again.transport.terminateSession()
+  await again.client.close()
+
+  step("10c. Session binding: another user's token cannot drive or terminate this session")
+  const otherUser = await mint({ sub: "user_11111", client_id: "agent-support-triage", scope: "tickets:read", resource: MCP })
+  const hijack = await fetch(`${MCP}/mcp`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${otherUser}`, "mcp-session-id": sessionId ?? "" },
+  })
+  show(`DELETE by another user -> HTTP ${hijack.status}`, await hijack.text())
 
   await transport.terminateSession()
   await client.close()

@@ -6,7 +6,7 @@ export const TEST_RESOURCE = "https://mcp.test"
 export type TestIssuer = {
   issuer: string
   getKey: JWTVerifyGetKey
-  mint(claims: { sub: string; client_id: string; scope: string; aud?: string; act?: { sub: string }; exp?: string; iss?: string }): Promise<string>
+  mint(claims: { sub: string; client_id: string; scope: string; aud?: string | string[]; act?: { sub: string }; exp?: string; iss?: string }): Promise<string>
 }
 
 export async function createTestIssuer(): Promise<TestIssuer> {
