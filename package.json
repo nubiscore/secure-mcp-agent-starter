@@ -5,7 +5,10 @@
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.33.2",
   "scripts": {
     "dev:issuer": "tsx dev/issuer.ts",
     "dev:server": "tsx watch src/index.ts",
