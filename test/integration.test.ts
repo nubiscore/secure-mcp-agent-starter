@@ -229,6 +229,59 @@ describe("gateway end to end", () => {
     expect(granted && granted.event === "agent.approval.granted" && granted.operator).toEqual({ subject: "oncall", client_id: "ops-console" })
   })
 
+  it("blocks egress in a session opened BEFORE another session read PII", async () => {
+    // user_11111 owns TKT-004822 and has not read PII in this suite yet.
+    const token = await mint({ sub: "user_11111" })
+    const early = await connect(token)
+    const reader = await connect(token)
+    const notifyArgs = { ticket_id: "TKT-004822", body: "status update" }
+
+    // Before the read, the early session only needs approval.
+    expect((await early.client.callTool({ name: "notify_customer", arguments: notifyArgs })).structuredContent).toMatchObject({ reason: "human_approval_required" })
+    expect((await reader.client.callTool({ name: "get_ticket", arguments: { ticket_id: "TKT-004822" } })).isError).toBeFalsy()
+
+    // After it, even an approved call from the earlier session is contained.
+    const operator = await issuer.mint({ sub: "oncall", client_id: "ops-console", scope: "agent:operate" })
+    expect((await approve(operator, early.transport.sessionId!, "notify_customer", notifyArgs)).status).toBe(201)
+    expect((await early.client.callTool({ name: "notify_customer", arguments: notifyArgs })).structuredContent).toMatchObject({ reason: "egress_after_pii" })
+
+    for (const s of [early, reader]) {
+      await s.transport.terminateSession()
+      await s.client.close()
+    }
+  })
+
+  it("counts irreversible actions across sessions that were already open", async () => {
+    const token = await mint()
+    const early = await connect(token)
+    const spender = await connect(token)
+    const operator = await issuer.mint({ sub: "oncall", client_id: "ops-console", scope: "agent:operate" })
+
+    // Spend the (subject, agent) mutation budget in one session...
+    let reason: unknown
+    for (let i = 0; i < 5 && reason !== "mutation_cap"; i++) {
+      const args = { order_id: "ORD-88213", amount_cents: 1, reason: `spend-${i}` }
+      await approve(operator, spender.transport.sessionId!, "issue_refund", args)
+      const res = await spender.client.callTool({ name: "issue_refund", arguments: args })
+      reason = res.isError ? (res.structuredContent as { reason?: unknown }).reason : undefined
+    }
+    expect(reason).toBe("mutation_cap")
+
+    // ...and the session opened before that spend is capped too, approval or not.
+    const args = { order_id: "ORD-88213", amount_cents: 1, reason: "early" }
+    expect((await approve(operator, early.transport.sessionId!, "issue_refund", args)).status).toBe(201)
+    expect((await early.client.callTool({ name: "issue_refund", arguments: args })).structuredContent).toMatchObject({ reason: "mutation_cap" })
+
+    const ids = [early.transport.sessionId, spender.transport.sessionId]
+    for (const s of [early, spender]) {
+      await s.transport.terminateSession()
+      await s.client.close()
+    }
+    // Every session that closed left a matching audit event.
+    const closed = events.filter((e) => e.event === "agent.session.closed").map((e) => e.session_id)
+    expect(closed).toEqual(expect.arrayContaining(ids))
+  })
+
   it("refuses a tool whose scope the token lacks, even for a declared agent", async () => {
     const { client, transport } = await connect(await mint({ scope: "tickets:read" }))
     const res = await client.callTool({ name: "issue_refund", arguments: { order_id: "ORD-88213", amount_cents: 1, reason: "x" } })

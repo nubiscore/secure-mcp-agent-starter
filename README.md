@@ -5,7 +5,7 @@
 
 A runnable reference implementation of a production-hardened [Model Context Protocol](https://modelcontextprotocol.io) server and the gateway that sits between an AI agent and its tools.
 
-It is the code behind NubisCore's article [Securing AI Agents in Production: Identity, MCP, and Least-Privilege Tool Access](https://nubiscore.ca/blog/securing-ai-agents). Every control the article describes is implemented here, tested, and demonstrated end to end by a sample client. Clone it, run three commands, and watch a poisoned document get stripped, an irreversible action get held for a human, a replayed token get rejected, and a kill switch take effect mid-session.
+It is the code behind NubisCore's article [Securing AI Agents in Production: Identity, MCP, and Least-Privilege Tool Access](https://nubiscore.ca/blog/securing-ai-agents). The core controls the article describes are implemented here, tested, and demonstrated end to end by a sample client; [What this is not](#what-this-is-not) lists the ones left to your platform. Clone it, run three commands, and watch a poisoned document get stripped, an irreversible action get held for a human, a replayed token get rejected, and a kill switch take effect mid-session.
 
 There is no LLM in the loop on purpose. The point is what the gateway does regardless of what a model asks for.
 
@@ -32,7 +32,7 @@ There is no LLM in the loop on purpose. The point is what the gateway does regar
 
 ## Quick start
 
-Requires Node 20+ and pnpm.
+Requires Node 22+ and pnpm.
 
 ```bash
 pnpm install
@@ -105,9 +105,9 @@ tools:
       reason: { type: string, max_length: 500 }
 ```
 
-Parameter declarations become the tool's input schema, so a malformed argument never reaches the handler. Fields marked `redact: true` are blanked in audit events. `touches_pii` and `external_egress` feed the chain-breaking rule, which is keyed by (user, agent) and survives a new session. `untrusted_output` makes the gateway strip and wrap the result centrally, so a handler cannot forget. The `agents` block is purpose binding: only the tools listed for a `client_id` are registered for its session, whatever scopes its token carries.
+Parameter declarations become the tool's input schema, so a malformed argument never reaches the handler. Fields marked `redact: true` are blanked in audit events. `touches_pii` and `external_egress` feed the chain-breaking rule, which is keyed by (user, agent), survives a new session, and reaches sessions that were already open: the gateway re-reads the (user, agent) ledger before every call. `untrusted_output` makes the gateway strip and wrap the result centrally, so a handler cannot forget. The `agents` block is purpose binding: only the tools listed for a `client_id` are registered for its session, whatever scopes its token carries.
 
-`pnpm manifest:hash` prints the hash of the whole file, tool definitions and agent bindings alike. Set `MANIFEST_HASH_PIN` to that value and a changed manifest refuses to start. `deploy/k8s/manifest.yaml` must be an identical copy; `pnpm lint` fails if it drifts.
+`pnpm manifest:hash` prints the hash of the whole file, tool definitions and agent bindings alike. Set `MANIFEST_HASH_PIN` to that value and a changed manifest refuses to start. `deploy/k8s/manifest.yaml` is the same file with the deployed `resource`, and `deploy/k8s/kustomization.yaml` pins its hash; `pnpm test` fails if the tools or agent bindings drift from `tools/manifest.yaml`, if `resource` differs from the deployment's `MCP_CANONICAL_URI`, or if the pin is stale.
 
 ## Configuration
 
@@ -118,7 +118,7 @@ All configuration is environment variables. See `.env.example`.
 | `MCP_CANONICAL_URI` | This server's canonical identifier. Tokens must carry it in `aud`. |
 | `OAUTH_ISSUER`, `OAUTH_JWKS_URL` | Your authorization server. The stub in `dev/issuer.ts` for local runs; Keycloak, Entra ID, Okta, Auth0, or your own in production. |
 | `TOOL_MANIFEST` | Path to the manifest. |
-| `MANIFEST_HASH_PIN` | Optional. Refuse to start if the manifest hash differs. |
+| `MANIFEST_HASH_PIN` | Refuse to start if the manifest hash differs. Required when `NODE_ENV=production` (the container image sets it), optional for local runs. |
 | `KILL_SWITCH_FILE` | JSON file re-read on every call. Mount it from a ConfigMap in Kubernetes. Missing or malformed fails closed, and startup refuses to run without it. |
 | `BUDGET_MAX_TOOL_CALLS` | Per-session cap on tool calls, counted by the gateway. |
 | `BUDGET_MAX_MUTATIONS` | Irreversible actions per (user, agent) per hour, counted across sessions. |
@@ -142,12 +142,15 @@ kubectl apply -k deploy/k8s              # namespace, gateway, network policies,
 
 Adjust the egress proxy namespace and labels in `networkpolicy.yaml` to your environment; without a proxy the gateway cannot fetch the authorization server's keys, which is the intended failure mode.
 
-The kill switch is the ConfigMap. On-call flips it with `kubectl edit` and the next tool call from the disabled agent is contained. Exercise this in a game day before you need it. Note that `disabled_versions` keys on the version the MCP client reports about itself, which is useful for halting a bad rollout but is client-controlled; the per-agent and global switches key on the verified `client_id`.
+The kill switch is the ConfigMap. On-call flips it with `kubectl edit`, and once the kubelet refreshes the mounted file (typically within a minute or two) the next tool call from the disabled agent is contained. For faster propagation, back `FlagStore` with a feature-flag service. Re-running `kubectl apply -k` resets the flags to `deploy/k8s/kill-switch.json`, so clear the switch in Git too, or leave it set there during an incident. Exercise this in a game day before you need it. Note that `disabled_versions` keys on the version the MCP client reports about itself, which is useful for halting a bad rollout but is client-controlled; the per-agent and global switches key on the verified `client_id`.
 
 ## What this is not
 
 - **Not a complete authorization server.** `dev/issuer.ts` mints tokens for anyone who asks. It exists so the starter runs on a laptop. Delete it from any real deployment.
 - **Not multi-replica ready as-is.** Sessions, rate limits, approvals, and the cross-session ledger are in memory, which is why the deployment ships with one replica. Back them with Redis or your store of choice before scaling out. The interfaces are small and in `src/policy/`.
+- **Not the whole kill switch.** It contains the disabled agent's next tool call. Revoking its tokens and draining open sessions belong to your authorization server and platform runbook.
+- **Not a circuit breaker.** Anomalies such as tool-call spikes, clustered authorization failures, and first-time tool use are emitted as audit events for your SIEM to alert on; nothing here trips automatically on them.
+- **Not a client-side gateway for third-party MCP servers.** This is the server side. Allowlisting and hash-pinning the third-party servers your agents connect to happens in the client or an egress gateway.
 - **Not enforcing workload identity beyond binding.** The `act` claim is verified, bound to the session, and recorded in every audit event, but no policy here says "this workload may not call that tool". Add that in `check()` when you have a workload identity system to key it on.
 - **Not a defence against prompt injection.** The envelope reduces the probability. The containment layer bounds the consequence. Neither is complete, and anyone selling you a complete one is overselling.
 - **Not a product.** It is a reference you fork, keep the shape of, and replace the sample handlers in.

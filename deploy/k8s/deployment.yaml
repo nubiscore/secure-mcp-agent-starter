@@ -48,7 +48,7 @@ spec:
               value: /config/manifest.yaml
             - name: KILL_SWITCH_FILE
               value: /config/kill-switch.json
-            # Pin the hash printed by `pnpm build && node -e ...` (see CI). A drifted manifest fails the start.
+            # Required in production. A manifest that differs from the pin fails the start.
             - name: MANIFEST_HASH_PIN
               valueFrom:
                 configMapKeyRef:

@@ -7,9 +7,10 @@
 # logged at startup and on every audit event so a changed manifest is
 # detectable (see MANIFEST_HASH_PIN).
 #
-# deploy/k8s/manifest.yaml must be an identical copy; CI checks that.
+# deploy/k8s/manifest.yaml must match this file except for `resource`, which
+# carries the deployed canonical URI; test/deploy-config.test.ts checks that.
 
-resource: http://localhost:3001
+resource: https://mcp.internal.example.com
 
 agents:
   # Purpose binding: an agent may only call the tools declared here, regardless

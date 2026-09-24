@@ -111,6 +111,21 @@ describe("session store ledger", () => {
     expect(other.mutations).toBe(0)
   })
 
+  it("syncs PII exposure and mutation counts into a session that was ALREADY open", () => {
+    const store = new SessionStore()
+    const early = session()
+    const other = new SessionState("s2", "agent-a", "1.0", "user_1", "spiffe://x/agent-a", new Set(["notify"]))
+    store.set(early)
+    store.set(other)
+    store.recordPiiAccess(other)
+    store.recordMutation(other)
+    expect(early.touchedPii).toBe(false)
+
+    store.sync(early)
+    expect(early.touchedPii).toBe(true)
+    expect(early.mutations).toBe(1)
+  })
+
   it("expires idle sessions and counts sessions per subject", () => {
     const store = new SessionStore()
     const a = session()
@@ -118,7 +133,7 @@ describe("session store ledger", () => {
     store.set(a)
     store.set(new SessionState("s2", "agent-a", "1.0", "user_1", undefined, new Set()))
     expect(store.countForSubject("user_1")).toBe(2)
-    expect(store.expireIdle(1000, 5000)).toEqual(["s1"])
+    expect(store.expireIdle(1000, 5000).map((s) => s.sessionId)).toEqual(["s1"])
     expect(store.countForSubject("user_1")).toBe(1)
   })
 })

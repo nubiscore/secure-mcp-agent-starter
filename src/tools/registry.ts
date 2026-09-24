@@ -119,9 +119,12 @@ export function registerManifestTools(server: McpServer, allowedTools: ReadonlyS
           return errorResult("insufficient_scope", `tool requires scope ${tool.required_scope}`)
         }
 
-        // 2. Containment, before the call, every call. Any unexpected failure
-        //    inside the check fails closed and is reported generically.
+        // 2. Containment, before the call, every call. Cross-session facts are
+        //    re-read first so a session opened earlier cannot act on a stale
+        //    view. Any unexpected failure inside the check fails closed and is
+        //    reported generically.
         try {
+          deps.sessions.sync(session)
           check(session, tool, args, deps.budget, deps.flags)
         } catch (err) {
           if (err instanceof Contained) {

@@ -9,12 +9,15 @@ resources:
 configMapGenerator:
   - name: mcp-gateway-config
     files:
-      # An identical copy of tools/manifest.yaml. Kustomize refuses to read
-      # files outside its root; CI fails if the two files drift.
+      # tools/manifest.yaml with the deployed `resource`. Kustomize refuses to
+      # read files outside its root; test/deploy-config.test.ts fails if the
+      # two drift apart.
       - manifest.yaml
       - kill-switch.json
     literals:
-      # Replace with the hash printed by `pnpm manifest:hash` for the manifest you approved.
-      - manifest_hash_pin=
+      # Hash of deploy/k8s/manifest.yaml as reviewed. After reviewing a manifest
+      # change, update it from `TOOL_MANIFEST=deploy/k8s/manifest.yaml pnpm manifest:hash`.
+      # The gateway refuses to start in production without it, or if it differs.
+      - manifest_hash_pin=sha256:c35eddaa80cdddf827c0f2cdccff04e2e8c74cd9c916d42187553d0625cd2ce5
 generatorOptions:
   disableNameSuffixHash: true

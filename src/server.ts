@@ -48,7 +48,7 @@ export function createApp(deps: AppDeps) {
   const sessionEvent = (
     event: "agent.session.opened" | "agent.session.closed" | "agent.session.expired" | "agent.session.refused",
     sessionId: string | null,
-    identity: VerifiedIdentity,
+    identity: Pick<VerifiedIdentity, "clientId" | "subject">,
     version: string,
     reason: string | null,
   ) =>
@@ -61,10 +61,16 @@ export function createApp(deps: AppDeps) {
       reason,
     })
 
+  /** Audit the end of a session. Every session that opens leaves a matching close or expiry. */
+  const endEvent = (event: "agent.session.closed" | "agent.session.expired", session: SessionState, reason: string) =>
+    sessionEvent(event, session.sessionId, { clientId: session.agentId, subject: session.subject }, session.agentVersion, reason)
+
   const closeSession = (id: string) => {
     const transport = transports.get(id)
+    const session = sessions.get(id)
     transports.delete(id)
     sessions.delete(id)
+    if (session) endEvent("agent.session.closed", session, "server_closed")
     if (transport) void transport.close().catch(() => undefined)
   }
 
@@ -72,9 +78,10 @@ export function createApp(deps: AppDeps) {
   const sweepIntervalMs = deps.sweepIntervalMs ?? 60_000
   if (sweepIntervalMs > 0) {
     const timer = setInterval(() => {
-      for (const id of sessions.expireIdle(sessionIdleMs)) {
-        const transport = transports.get(id)
-        transports.delete(id)
+      for (const session of sessions.expireIdle(sessionIdleMs)) {
+        endEvent("agent.session.expired", session, "idle_timeout")
+        const transport = transports.get(session.sessionId)
+        transports.delete(session.sessionId)
         if (transport) void transport.close().catch(() => undefined)
       }
     }, sweepIntervalMs)
@@ -163,8 +170,10 @@ export function createApp(deps: AppDeps) {
         transports.set(id, transport)
       },
       onsessionclosed: (id) => {
+        const session = sessions.get(id)
         transports.delete(id)
         sessions.delete(id)
+        if (session) endEvent("agent.session.closed", session, "client_closed")
       },
     })
     transport.onclose = () => {

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
@@ -10,7 +10,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN pnpm exec tsc -p tsconfig.json && pnpm prune --prod
 
-FROM node:20-alpine
+FROM node:22-alpine
 ENV NODE_ENV=production
 # Sane defaults for a container. Override with the ConfigMap mount in Kubernetes.
 ENV TOOL_MANIFEST=/app/tools/manifest.yaml

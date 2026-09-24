@@ -14,7 +14,11 @@ const manifest = loadManifest(config.manifestPath)
 let manifestHash: string
 try {
   // Pinning the manifest hash is what detects a rug pull: a changed tool
-  // description, parameter schema, or agent purpose fails the start.
+  // description, parameter schema, or agent purpose fails the start. In
+  // production an unset pin is itself a misconfiguration, not an opt-out.
+  if (process.env.NODE_ENV === "production" && !config.manifestHashPin) {
+    throw new Error("MANIFEST_HASH_PIN is required when NODE_ENV=production; set it to the output of `pnpm manifest:hash`")
+  }
   manifestHash = assertManifestPinned(manifest, config.manifestHashPin)
   if (manifest.resource !== config.canonicalUri) {
     throw new Error(`manifest.resource (${manifest.resource}) does not match MCP_CANONICAL_URI (${config.canonicalUri})`)
